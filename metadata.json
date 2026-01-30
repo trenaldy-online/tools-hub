@@ -1,0 +1,5 @@
+{
+  "name": "Office Tools Hub",
+  "description": "A client-side suite of productivity tools including QR generation and media compression.",
+  "requestFramePermissions": []
+}
