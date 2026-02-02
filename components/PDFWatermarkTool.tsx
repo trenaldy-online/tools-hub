@@ -18,6 +18,7 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
   // Main File
   const [file, setFile] = useState<File | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [pdfDimensions, setPdfDimensions] = useState<{width: number, height: number} | null>(null);
   
   // Settings
   const [type, setType] = useState<'text' | 'image'>('text');
@@ -25,7 +26,7 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
   // Text Settings
   const [text, setText] = useState('CONFIDENTIAL');
   const [textSize, setTextSize] = useState(48);
-  const [textColor, setTextColor] = useState('#FF0000');
+  const [textColor, setTextColor] = useState('#000000');
   const [isBold, setIsBold] = useState(false);
   const [isItalic, setIsItalic] = useState(false);
   
@@ -36,12 +37,16 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
 
   // Common Settings
   const [position, setPosition] = useState<Position>(5); // 5 = Center
-  const [opacity, setOpacity] = useState(0.5);
-  const [rotation, setRotation] = useState(45);
+  const [transparency, setTransparency] = useState(50); // 0-100%
+  const [rotation, setRotation] = useState(45); // Degrees (CCW positive standard)
   
   // Processing
   const [isProcessing, setIsProcessing] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+
+  // Preview Scaling
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [previewScaleRatio, setPreviewScaleRatio] = useState(1);
 
   useEffect(() => {
     return () => {
@@ -50,6 +55,32 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
         if (resultUrl) URL.revokeObjectURL(resultUrl);
     };
   }, []);
+
+  // Update preview scale ratio when image resizes (responsive)
+  useEffect(() => {
+    if (!imgRef.current || !pdfDimensions) return;
+    
+    const updateRatio = () => {
+        if (imgRef.current && pdfDimensions) {
+            const renderedWidth = imgRef.current.clientWidth;
+            // Prevent division by zero
+            if (pdfDimensions.width > 0) {
+                setPreviewScaleRatio(renderedWidth / pdfDimensions.width);
+            }
+        }
+    };
+
+    const resizeObserver = new ResizeObserver(updateRatio);
+    resizeObserver.observe(imgRef.current);
+    // Also trigger on load
+    imgRef.current.addEventListener('load', updateRatio);
+
+    return () => {
+        resizeObserver.disconnect();
+        imgRef.current?.removeEventListener('load', updateRatio);
+    };
+  }, [previewImage, pdfDimensions]);
+
 
   // Load PDF Preview (First Page)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -66,6 +97,8 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
               const page = await pdf.getPage(1);
               const viewport = page.getViewport({ scale: 1.0 });
               
+              setPdfDimensions({ width: viewport.width, height: viewport.height });
+
               const canvas = document.createElement('canvas');
               canvas.width = viewport.width;
               canvas.height = viewport.height;
@@ -128,37 +161,53 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
           const g = parseInt(textColor.slice(3, 5), 16) / 255;
           const b = parseInt(textColor.slice(5, 7), 16) / 255;
 
+          const opacity = 1 - (transparency / 100);
+          const rad = (rotation * Math.PI) / 180;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+
           // Loop pages
           pages.forEach(page => {
               const { width, height } = page.getSize();
-              let x = 0, y = 0;
               let contentWidth = 0;
               let contentHeight = 0;
 
               // Calculate content dimensions
               if (type === 'text' && embedFont) {
                   contentWidth = embedFont.widthOfTextAtSize(text, textSize);
-                  contentHeight = textSize;
+                  // Use heightAtSize for more accurate vertical centering if available, else approximate with textSize
+                  contentHeight = embedFont.heightAtSize(textSize); 
               } else if (type === 'image' && embedDims) {
                   contentWidth = embedDims.width;
                   contentHeight = embedDims.height;
               }
 
-              // Calculate X, Y based on Grid Position (1-9)
-              // 1 2 3
-              // 4 5 6
-              // 7 8 9
-              const margin = 20;
+              // 1. Determine Target Center (cx, cy) based on Percentage Grid
+              let cx = 0;
+              let cy = 0;
 
-              // Horizontal
-              if ([1, 4, 7].includes(position)) x = margin; // Left
-              else if ([2, 5, 8].includes(position)) x = (width / 2) - (contentWidth / 2); // Center
-              else x = width - contentWidth - margin; // Right
+              // Horizontal (10% | 50% | 90%)
+              if ([1, 4, 7].includes(position)) cx = width * 0.1;
+              else if ([2, 5, 8].includes(position)) cx = width * 0.5;
+              else cx = width * 0.9;
 
-              // Vertical (PDF Y starts from bottom)
-              if ([7, 8, 9].includes(position)) y = margin; // Bottom
-              else if ([4, 5, 6].includes(position)) y = (height / 2) - (contentHeight / 2); // Center
-              else y = height - contentHeight - margin; // Top
+              // Vertical (90% | 50% | 10%) - Note PDF Y is 0 at bottom
+              if ([1, 2, 3].includes(position)) cy = height * 0.9;
+              else if ([4, 5, 6].includes(position)) cy = height * 0.5;
+              else cy = height * 0.1;
+
+              // 2. Calculate Draw Origin (x, y) to achieve Center Rotation around (cx, cy)
+              // We define (ox, oy) as the center of the content relative to its drawing origin (bottom-left)
+              const ox = contentWidth / 2;
+              const oy = contentHeight / 2 - (type === 'text' ? (contentHeight * 0.15) : 0); // Visual correction for text baseline
+
+              // We want to rotate the vector (ox, oy) by theta
+              const rx = (ox * cos) - (oy * sin);
+              const ry = (ox * sin) + (oy * cos);
+
+              // The draw origin (x, y) is simply the target center (cx, cy) minus the rotated offset vector
+              const x = cx - rx;
+              const y = cy - ry;
 
               // Draw
               if (type === 'text' && embedFont) {
@@ -197,23 +246,40 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
 
   // Helper CSS Position for Preview Overlay
   const getPreviewStyle = (): React.CSSProperties => {
+      // Base styles
       const base: React.CSSProperties = {
           position: 'absolute',
-          opacity: opacity,
-          transform: `rotate(${rotation}deg)`,
+          opacity: 1 - (transparency / 100),
           transformOrigin: 'center center',
-          pointerEvents: 'none'
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+          lineHeight: '1', // Crucial for tight bounding box centering
+          zIndex: 20,
       };
 
-      // Map grid 1-9 to Flex alignment terms approximation
-      // Note: Rotation changes the bounding box visual logic, but simple placement is enough for preview
-      if ([1, 4, 7].includes(position)) base.left = '10%';
-      if ([2, 5, 8].includes(position)) { base.left = '50%'; base.translate = '-50% 0'; }
-      if ([3, 6, 9].includes(position)) { base.right = '10%'; }
+      // 1. Position on grid (Top-Left coordinate)
+      let left = '50%';
+      let top = '50%';
 
-      if ([1, 2, 3].includes(position)) base.top = '10%';
-      if ([4, 5, 6].includes(position)) { base.top = '50%'; base.translate = base.translate ? '-50% -50%' : '0 -50%'; }
-      if ([7, 8, 9].includes(position)) { base.bottom = '10%'; }
+      // Horizontal (10% | 50% | 90%)
+      if ([1, 4, 7].includes(position)) left = '10%';
+      else if ([2, 5, 8].includes(position)) left = '50%';
+      else left = '90%';
+
+      // Vertical (10% | 50% | 90%)
+      if ([1, 2, 3].includes(position)) top = '10%';
+      else if ([4, 5, 6].includes(position)) top = '50%';
+      else top = '90%';
+
+      base.left = left;
+      base.top = top;
+
+      // 2. Transform Logic: 
+      // First, translate(-50%, -50%) to center the element on the (left, top) coordinate.
+      // Second, rotate it around its center.
+      // Note: CSS rotation is Clockwise. PDF is Counter-Clockwise.
+      // We use negative rotation in CSS to match PDF visual direction.
+      base.transform = `translate(-50%, -50%) rotate(${-rotation}deg)`;
       
       return base;
   };
@@ -249,18 +315,23 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
                 {/* PREVIEW AREA */}
                 <div className="lg:col-span-2 bg-gray-100 dark:bg-gray-900 rounded-xl p-4 flex items-center justify-center min-h-[500px] border border-gray-200 dark:border-gray-700 relative overflow-hidden">
                     {previewImage ? (
-                        <div className="relative shadow-lg max-w-full max-h-[70vh]">
-                            <img src={previewImage} alt="PDF Preview" className="max-w-full max-h-[70vh] object-contain bg-white" />
+                        <div className="relative shadow-lg inline-block">
+                            <img 
+                                ref={imgRef}
+                                src={previewImage} 
+                                alt="PDF Preview" 
+                                className="max-w-full max-h-[70vh] object-contain bg-white block select-none" 
+                            />
                             
                             {/* OVERLAY */}
-                            <div style={getPreviewStyle()} className="z-10 whitespace-nowrap transition-all duration-200 ease-out">
+                            <div style={getPreviewStyle()} className="transition-all duration-200 ease-out">
                                 {type === 'text' ? (
                                     <span style={{ 
-                                        fontSize: `${Math.max(12, textSize / 2)}px`, // Scale down for preview roughly
+                                        fontSize: `${textSize * previewScaleRatio}px`,
                                         color: textColor,
                                         fontWeight: isBold ? 'bold' : 'normal',
                                         fontStyle: isItalic ? 'italic' : 'normal',
-                                        textShadow: '0 0 2px rgba(255,255,255,0.5)'
+                                        textShadow: '0 0 2px rgba(255,255,255,0.2)'
                                     }}>
                                         {text}
                                     </span>
@@ -270,7 +341,9 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
                                             src={watermarkPreview} 
                                             alt="wm" 
                                             style={{ 
-                                                width: `${imageScale * 200}px`, // Approx width
+                                                // We approximate image scale based on a base size (e.g. 500px) * scale * previewRatio
+                                                // Ideally we'd use intrinsic width, but this is a decent WYSIWYG approximation
+                                                width: `${(imageScale * 500) * previewScaleRatio}px`,
                                             }} 
                                         />
                                     )
@@ -325,7 +398,7 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
                                         <input type="color" value={textColor} onChange={(e) => setTextColor(e.target.value)} className="h-[42px] w-[42px] rounded cursor-pointer" />
                                     </div>
                                     <input 
-                                        type="range" min="10" max="120" value={textSize} onChange={(e) => setTextSize(Number(e.target.value))}
+                                        type="range" min="10" max="150" value={textSize} onChange={(e) => setTextSize(Number(e.target.value))}
                                         className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
                                     />
                                     <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -378,10 +451,10 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
                             <div>
                                 <div className="flex justify-between mb-1">
                                     <label className="text-sm font-medium">{t('wm.transparency')}</label>
-                                    <span className="text-xs text-gray-500">{Math.round((1-opacity)*100)}%</span>
+                                    <span className="text-xs text-gray-500">{transparency}%</span>
                                 </div>
                                 <input 
-                                    type="range" min="0.1" max="1.0" step="0.1" value={opacity} onChange={(e) => setOpacity(Number(e.target.value))}
+                                    type="range" min="0" max="100" value={transparency} onChange={(e) => setTransparency(Number(e.target.value))}
                                     className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
                                 />
                             </div>
@@ -394,9 +467,9 @@ const PDFWatermarkTool: React.FC<Props> = ({ t }) => {
                                         className="text-xs border rounded p-1 dark:bg-gray-700 dark:border-gray-600"
                                     >
                                         <option value="0">0°</option>
-                                        <option value="45">45°</option>
+                                        <option value="45">45° (Up-Right)</option>
                                         <option value="90">90°</option>
-                                        <option value="-45">-45°</option>
+                                        <option value="-45">-45° (Down-Right)</option>
                                     </select>
                                 </div>
                             </div>

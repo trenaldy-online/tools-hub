@@ -64,7 +64,7 @@ const PDFMergeTool: React.FC<Props> = ({ t }) => {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const newFiles = Array.from(e.target.files);
+      const newFiles = Array.from(e.target.files) as File[];
       setMergedPdfUrl(null);
 
       // Create temporary items with loading state

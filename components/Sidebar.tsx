@@ -39,7 +39,7 @@ const Sidebar: React.FC<Props> = ({
     }
   };
 
-  const NavItem = ({ view, label, iconName }: { view: View; label: string; iconName: string }) => {
+  const NavItem: React.FC<{ view: View; label: string; iconName: string }> = ({ view, label, iconName }) => {
     const Icon = (Icons as any)[iconName] || Icons.HelpCircle;
     const isActive = currentView === view;
     
